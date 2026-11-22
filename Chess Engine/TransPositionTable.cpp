@@ -57,7 +57,9 @@ void TranspositionTable::store(uint64_t key, int depth, int score, HashFlag flag
         entry->depth = depth;
         entry->flag = (uint8_t)flag;
         entry->age = generation;
-        entry->bestMove = bestMove;
+        // No move given (a1a1, e.g. after a fail low): keep the one already stored
+        // for this position.
+        if (bestMove.from != bestMove.to || !samePosition) entry->bestMove = bestMove;
     }
 }
 void TranspositionTable::store(uint64_t key, int mgScore, int egScore){

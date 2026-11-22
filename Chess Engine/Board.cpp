@@ -737,6 +737,40 @@ bool Board::SEECalculation(const Board& board, int sq, Color attackerColor) {
     return gain[0] >= 0;
 }
 
+bool Board::seeGE(const Move& move, int threshold) const {
+    // En passant and castling never lose material on the target square.
+    if (move.flag == MoveFlag::EN_PASSANT || move.flag == MoveFlag::KING_CASTLE
+        || move.flag == MoveFlag::QUEEN_CASTLE) return threshold <= 0;
+
+    const int from = move.from, to = move.to;
+    const int mover = getPieceType(from);
+    // swap: what the side to recapture next must win back to beat the threshold.
+    int swap = PIECE_VALUES[getPieceType(to)] - threshold;
+    if (swap < 0) return false;
+    swap = PIECE_VALUES[mover] - swap;
+    if (swap <= 0) return true;
+
+    uint64_t occupied = getOccupancy(BOTH) & ~(1ULL << from) & ~(1ULL << to);
+    Color stm = (mover < B_PAWN) ? WHITE : BLACK;
+    bool res = true;   // true while the side that moved is winning the exchange
+    while (true) {
+        stm = (stm == WHITE) ? BLACK : WHITE;
+        int sq = GenerateMoves::findLVA(*this, to, stm, occupied);
+        if (sq < 0) break;
+        res = !res;
+        int piece = getPieceType(sq);
+        if (piece == W_KING || piece == B_KING) {
+            // The king may only recapture when the other side has no attacker left.
+            Color other = (stm == WHITE) ? BLACK : WHITE;
+            return GenerateMoves::findLVA(*this, to, other, occupied) >= 0 ? !res : res;
+        }
+        swap = PIECE_VALUES[piece] - swap;
+        if (swap < (res ? 1 : 0)) break;
+        occupied &= ~(1ULL << sq);
+    }
+    return res;
+}
+
 bool Board::isLegalMove(Move move) {
     Move moveList[256];
     int moveCount = GenerateMoves::generateMoves(*this, moveList);

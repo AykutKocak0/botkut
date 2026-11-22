@@ -47,6 +47,7 @@ void runBench(Search& search, int depth) {
     for (const char* fen : BENCH_FENS) {
         TT.clear();
         PTT.clear();
+        search.clearHistory();
         Board board;
         board.parseFEN(fen);
         SearchLimits limits;
@@ -228,6 +229,7 @@ int main(int argc, char* argv[]) {
             search.stopAndWait();   // the search thread uses both tables
             TT.clear();
             PTT.clear();
+            search.clearHistory();
         }
         else if (command == "isready") {
             uciPrint("readyok");

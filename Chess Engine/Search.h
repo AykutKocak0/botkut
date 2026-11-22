@@ -48,6 +48,9 @@ public:
     void stopAndWait();
     // Waits for the running search to finish on its own.
     void waitForFinish();
+    // Forgets history, continuation history and countermoves (new game). Searches
+    // otherwise keep them, halved, from one move to the next.
+    void clearHistory();
     bool isInfinite() const { return infinite; }
 
     Move getBestMove() const { return bestMoveFound; }
@@ -97,11 +100,20 @@ private:
     static constexpr int SCORE_BAD_CAPTURE  = -1000000;
     static constexpr int SCORE_UNDERPROMO   = -2000000;
     static constexpr int HISTORY_MAX        =    10000;
+    static constexpr int QS_SKIP            = -10000000;  // quiescence: losing capture
 
     // Mate scores: being mated at ply p scores -MATE_SCORE + p. Anything beyond
     // +/-MATE_BOUND is a mate score (static evals never get near it).
     static constexpr int MATE_SCORE = 90000;
     static constexpr int MATE_BOUND = 80000;
+
+    // The TT stores mate scores relative to the node, the search relative to the root.
+    static int scoreToTT(int score, int ply) {
+        return score > MATE_BOUND ? score + ply : score < -MATE_BOUND ? score - ply : score;
+    }
+    static int scoreFromTT(int score, int ply) {
+        return score > MATE_BOUND ? score - ply : score < -MATE_BOUND ? score + ply : score;
+    }
 
     // Reverse futility pruning: return the static eval at shallow non-PV nodes
     // when it beats beta by RFP_MARGIN per remaining ply.
@@ -113,9 +125,15 @@ private:
     static constexpr int LMP_MAX_DEPTH = 4;
     static constexpr int LMP_BASE = 3;
 
+    // SEE pruning at non-PV nodes with depth <= SEE_PRUNE_MAX_DEPTH: skip quiets with
+    // SEE < -SEE_QUIET_MARGIN * depth^2 and captures with SEE < -SEE_CAPTURE_MARGIN * depth.
+    static constexpr int SEE_PRUNE_MAX_DEPTH = 6;
+    static constexpr int SEE_QUIET_MARGIN = 50;
+    static constexpr int SEE_CAPTURE_MARGIN = 100;
+
     // Quiescence generates quiet checking moves only in its first QS_CHECK_PLIES
     // plies (0 = never); check evasions are always searched.
-    static constexpr int QS_CHECK_PLIES = 2;
+    static constexpr int QS_CHECK_PLIES = 0;
     // UCI score string: "cp N", or "mate N" in moves (negative = getting mated).
     static std::string scoreToUci(int score);
 
@@ -132,7 +150,7 @@ private:
     Move bestMoveFound;
     bool stopSearching = false;
     bool timed = false;
-    int historyTable[2][64][64];
+    int historyTable[2][64][64] = {};   // kept between searches, so it must start at zero
 
     Move killerMoves[64][2];
 

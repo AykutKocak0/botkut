@@ -61,6 +61,15 @@ SearchResult Search::searchSync(Board& board, const SearchLimits& limits) {
     return result;
 }
 
+void Search::clearHistory() {
+    stopAndWait();
+    memset(historyTable, 0, sizeof(historyTable));
+    std::fill(contHist.begin(), contHist.end(), 0);
+    for (int p = 0; p < 12; p++) {
+        for (int sq = 0; sq < 64; sq++) counterMoves[p][sq] = Move();
+    }
+}
+
 void Search::startSearch(Board& board, const SearchLimits& limits) {
     const int maxDepth = limits.depth;
     nodes = 0;
@@ -82,17 +91,18 @@ void Search::startSearch(Board& board, const SearchLimits& limits) {
         uciPrint("bestmove " + move);
     };
 
-    memset(historyTable, 0, sizeof(historyTable));
+    // History and countermoves carry over from the previous move of the game (halved,
+    // so old information fades); "ucinewgame" clears them via clearHistory().
+    for (auto& side : historyTable)
+        for (auto& from : side)
+            for (int& entry : from) entry /= 2;
+    for (int& entry : contHist) entry /= 2;
     for (int i = 0; i < MAX_PLY; i++) {
         killerMoves[i][0] = Move();
         killerMoves[i][1] = Move();
         stackMoves[i] = Move();
         stackPieces[i] = -1;
     }
-    for (int p = 0; p < 12; p++) {
-        for (int sq = 0; sq < 64; sq++) counterMoves[p][sq] = Move();
-    }
-    std::fill(contHist.begin(), contHist.end(), 0);
 
     timed = isTimeLeft;
     TT.newSearch();
@@ -126,12 +136,8 @@ void Search::startSearch(Board& board, const SearchLimits& limits) {
     Move rootPV[65];
     int rootPVLength = 0;
     for (int currentDepth = 1; currentDepth <= maxDepth; currentDepth++) {
-        if(isTimeLeft){
-            if(timeManager.isTimeUp()) break;
-            int allocatedTime = timeManager.getAllocatedTimeMs();
-            int elapsedTime = timeManager.getElapsedTimeMs();
-           // if((allocatedTime * 6) / 10 <= elapsedTime) break;
-        }
+        // Past the soft limit the next iteration would most likely not finish.
+        if (isTimeLeft && timeManager.isSoftTimeUp()) break;
         int alpha = -1000000;
         int beta  =  1000000;
         
@@ -287,7 +293,8 @@ int Search::alphaBeta(Board& board, int alpha, int beta, int depthLeft, int ply,
     TTEntry* entry = TT.probe(zobristKey);
     if (entry != nullptr) {
         hashMove = entry->bestMove;
-        hasHashMove = true;
+        // Fail-low entries carry no move (a1a1).
+        hasHashMove = hashMove.from != hashMove.to;
         int ttScore = entry->score;
         if (ttScore > MATE_BOUND) ttScore -= ply;
         else if (ttScore < -MATE_BOUND) ttScore += ply;
@@ -310,7 +317,8 @@ int Search::alphaBeta(Board& board, int alpha, int beta, int depthLeft, int ply,
         return staticEval;
     }
 
-    if (!wasChecked && depthLeft <= 2) {
+    // Razoring: hopeless shallow non-PV nodes drop straight into quiescence.
+    if (!pvNode && !wasChecked && depthLeft <= 2) {
         int margin = 300 + 150 * depthLeft * depthLeft;
         
         if (staticEval < alpha - margin) {
@@ -333,7 +341,8 @@ int Search::alphaBeta(Board& board, int alpha, int beta, int depthLeft, int ply,
 
         if (stopped) return 0;
         if(nullScore >= beta){
-            return nullScore;
+            // A mate found after passing is not a real mate for this position.
+            return nullScore >= MATE_BOUND ? beta : nullScore;
         }
     }
     // Internal iterative reduction: without a hash move the ordering is weak,
@@ -365,6 +374,14 @@ int Search::alphaBeta(Board& board, int alpha, int beta, int depthLeft, int ply,
         bool quietMove = !moveList[i].isCapture() && !moveList[i].isPromotion();
         // bestValue > -MATE_BOUND: some move was searched and it does not lose to a mate.
         if (lmpNode && quietMove && quietsSeen >= lmpLimit && bestValue > -MATE_BOUND) continue;
+        // SEE pruning: at shallow non-PV nodes skip moves that lose too much material
+        // on their target square (the allowed loss grows with depth).
+        if (!pvNode && !wasChecked && movesSearched > 0 && depthLeft <= SEE_PRUNE_MAX_DEPTH
+            && bestValue > -MATE_BOUND && !moveList[i].isPromotion()) {
+            int threshold = quietMove ? -SEE_QUIET_MARGIN * depthLeft * depthLeft
+                                      : -SEE_CAPTURE_MARGIN * depthLeft;
+            if (!board.seeGE(moveList[i], threshold)) continue;
+        }
         stackMoves[ply] = moveList[i];
         stackPieces[ply] = board.getPieceType(moveList[i].from);
         if(!board.makeMove(moveList[i])) continue;
@@ -448,7 +465,9 @@ int Search::alphaBeta(Board& board, int alpha, int beta, int depthLeft, int ply,
     if (storeScore > MATE_BOUND) storeScore += ply;
     else if (storeScore < -MATE_BOUND) storeScore -= ply;
 
-    TT.store(zobristKey, depthLeft, storeScore, flag, bestMove);
+    // After a fail low the "best" move is just the highest upper bound, which says
+    // nothing; store no move so a good one already in the entry is kept.
+    TT.store(zobristKey, depthLeft, storeScore, flag, flag == HASH_ALPHA ? Move() : bestMove);
 
     return bestValue;
 }
@@ -456,10 +475,29 @@ int Search::alphaBeta(Board& board, int alpha, int beta, int depthLeft, int ply,
 int Search::quiescence(Board& board, int alpha, int beta, int ply, int qsDepth) {
     nodes++;
     if (ply >= MAX_PLY) return board.evaluate();
+
+    // Any TT entry is deep enough for quiescence (depth 0).
+    const int originalAlpha = alpha;
+    const uint64_t key = board.getZobristKey();
+    TTEntry* entry = TT.probe(key);
+    Move ttMove;
+    if (entry != nullptr) {
+        int ttScore = scoreFromTT(entry->score, ply);
+        if (entry->flag == HASH_EXACT
+            || (entry->flag == HASH_ALPHA && ttScore <= alpha)
+            || (entry->flag == HASH_BETA && ttScore >= beta)) return ttScore;
+        ttMove = entry->bestMove;
+    }
+    // Results are stored at depth 0, but never over a real search of this position.
+    const bool mayStore = entry == nullptr || entry->depth <= 0;
+
     bool inCheck = board.isInCheck();
     if (!inCheck) {
         int standPat = board.evaluate();
-        if (standPat >= beta) return standPat;
+        if (standPat >= beta) {
+            if (mayStore) TT.store(key, 0, scoreToTT(standPat, ply), HASH_BETA, Move());
+            return standPat;
+        }
         if (standPat > alpha) alpha = standPat;
     }
 
@@ -483,22 +521,22 @@ int Search::quiescence(Board& board, int alpha, int beta, int ply, int qsDepth) 
             moveList[i].score = scoreMove(board, moveList[i], ply);
         } else {
             if (moveList[i].isCapture() || moveList[i].isCapturePromotion()) {
-                moveList[i].score = scoreCapture(board, moveList[i]);
+                bool losing = false;
+                moveList[i].score = scoreCapture(board, moveList[i], &losing);
+                // Captures that lose material (SEE < 0) are not searched at all.
+                if (losing) moveList[i].score = QS_SKIP;
             } else {
                 // Quiet checks go after every SEE-passing capture (those score >= 100).
                 moveList[i].score = 0;
             }
         }
+        if (moveList[i] == ttMove) moveList[i].score = SCORE_HASH;
     }
+    Move bestMove;
     for (int i = 0; i < moveCount; i++) {
         pickBestMove(moveList, moveCount, i);
-        // SEE needs a piece on the target square: skip en passant and non-captures.
-        bool seeApplies = moveList[i].flag == MoveFlag::CAPTURE || moveList[i].isCapturePromotion();
-
-        if(seeApplies && !inCheck){
-            bool SEE = board.SEECalculation(board,moveList[i].to,board.sideToMove);
-            if(!SEE) continue;
-        }
+        // QS_SKIP is the lowest score, so every move from here on is a losing capture.
+        if (!inCheck && moveList[i].score == QS_SKIP) break;
         stackMoves[ply] = moveList[i];
         stackPieces[ply] = board.getPieceType(moveList[i].from);
         if (!board.makeMove(moveList[i])) continue;
@@ -508,12 +546,22 @@ int Search::quiescence(Board& board, int alpha, int beta, int ply, int qsDepth) 
         
         board.unmakeMove(moveList[i]);
 
-        if (score >= beta) return score;
-        if (score > alpha) alpha = score;
+        if (score >= beta) {
+            if (mayStore) TT.store(key, 0, scoreToTT(score, ply), HASH_BETA, moveList[i]);
+            return score;
+        }
+        if (score > alpha) {
+            alpha = score;
+            bestMove = moveList[i];
+        }
     }
-    
+
     if (inCheck && legalMovesSearched == 0) {
-        return -MATE_SCORE + ply; 
+        return -MATE_SCORE + ply;
+    }
+    if (mayStore) {
+        HashFlag flag = alpha > originalAlpha ? HASH_EXACT : HASH_ALPHA;
+        TT.store(key, 0, scoreToTT(alpha, ply), flag, bestMove);
     }
     return alpha;
 }
@@ -532,7 +580,7 @@ int Search::scoreCapture(Board& board, Move& move, bool* losing) {
     if (move.flag == MoveFlag::EN_PASSANT) return score;
     // A capture can only lose material when the attacker is worth more than the victim.
     if (PIECE_VALUES[pieceMoved] > PIECE_VALUES[pieceTaken]) {
-        if (!board.SEECalculation(board, move.to, board.sideToMove)) {
+        if (!board.seeGE(move, 0)) {
             score -= 5000;
             if (losing) *losing = true;
         }

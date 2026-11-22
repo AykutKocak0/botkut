@@ -621,31 +621,33 @@ bool GenerateMoves::isSquareAttacked(const Board& board, int sq, Color attackerC
     return false;
 }
 
+// Least valuable attacker of sq for attackerColor, considering only pieces still in
+// occupancy (exchange code removes pieces that have already captured).
 int GenerateMoves::findLVA(const Board& board, int sq, Color attackerColor, uint64_t occupancy){
     Color squareColor = (attackerColor == WHITE) ? BLACK : WHITE;
-    uint64_t attackerPawns = board.getPieceBB(attackerColor == WHITE ? W_PAWN : B_PAWN);
+    uint64_t attackerPawns = board.getPieceBB(attackerColor == WHITE ? W_PAWN : B_PAWN) & occupancy;
     uint64_t bbToReturn;
     bbToReturn = pawnAttacks[squareColor][sq] & attackerPawns;
     if (bbToReturn) return getLS1B(bbToReturn);
 
-    uint64_t attackerKnights = board.getPieceBB(attackerColor == WHITE ? W_KNIGHT : B_KNIGHT);
+    uint64_t attackerKnights = board.getPieceBB(attackerColor == WHITE ? W_KNIGHT : B_KNIGHT) & occupancy;
     bbToReturn = knightMoves[sq] & attackerKnights;
     if (bbToReturn) return getLS1B(bbToReturn);
 
     uint64_t rookMagicBB = getRookMagicBB(sq,occupancy);
     uint64_t bishopMagicBB = getBishopMagicBB(sq,occupancy);
     uint64_t queensBB = rookMagicBB | bishopMagicBB;
-    uint64_t bishops = board.getPieceBB(attackerColor == WHITE ? W_BISHOP : B_BISHOP);
+    uint64_t bishops = board.getPieceBB(attackerColor == WHITE ? W_BISHOP : B_BISHOP) & occupancy;
     bbToReturn = bishops & bishopMagicBB;
     if (bbToReturn) return getLS1B(bbToReturn);
-    uint64_t rooks = board.getPieceBB(attackerColor == WHITE ? W_ROOK : B_ROOK);    
-    bbToReturn = rooks & rookMagicBB;  
+    uint64_t rooks = board.getPieceBB(attackerColor == WHITE ? W_ROOK : B_ROOK) & occupancy;
+    bbToReturn = rooks & rookMagicBB;
     if (bbToReturn) return getLS1B(bbToReturn);
-    uint64_t queens = board.getPieceBB(attackerColor == WHITE ? W_QUEEN : B_QUEEN);
+    uint64_t queens = board.getPieceBB(attackerColor == WHITE ? W_QUEEN : B_QUEEN) & occupancy;
     bbToReturn = queens & queensBB;
     if (bbToReturn) return getLS1B(bbToReturn);
 
-    uint64_t attackerKing = board.getPieceBB(attackerColor == WHITE ? W_KING : B_KING);
+    uint64_t attackerKing = board.getPieceBB(attackerColor == WHITE ? W_KING : B_KING) & occupancy;
     bbToReturn = kingMoves[sq] & attackerKing;
     if (bbToReturn) return getLS1B(bbToReturn);
 
