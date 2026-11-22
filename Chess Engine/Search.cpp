@@ -263,213 +263,241 @@ void Search::startSearch(Board& board, const SearchLimits& limits) {
     printBestMove(Notation::moveToUci(bestMoveFound));
 }
 
+// ---------------------------------------------------------------------------
+// alphaBeta and its parts. The main function reads top to bottom as the order in
+// which a node is handled; each step lives in a small helper below it.
+// ---------------------------------------------------------------------------
+
 int Search::alphaBeta(Board& board, int alpha, int beta, int depthLeft, int ply, bool allowNull) {
     nodes++;
     // Empty PV until a move raises alpha; must happen before any early return.
     pvLength[ply] = ply;
-    if (timed && (nodes & 2047) == 0) {
-        if (timeManager.isTimeUp()) {
-            stopped = true;
-        }
-    }
-    if (nodeLimit && nodes >= nodeLimit) stopped = true;
-    if (ply > 0 && (board.isRepetition() || board.getMovesWH() >=100)) {
+    checkLimits();
 
-        return 0;
-    }
+    if (ply > 0 && (board.isRepetition() || board.getMovesWH() >= 100)) return 0;
     if (ply >= MAX_PLY) return board.evaluate();
-    int originalAlpha = alpha;
-    Move hashMove;
-    bool hasHashMove = false;
-    uint64_t zobristKey = board.getZobristKey();
 
-    Move bestMove;
-    if(ply < MAX_PLY){
-        if(board.isInCheck()) depthLeft++;
-    }
-    if(stopped) return 0;
-    if (depthLeft <= 0){
-        return quiescence(board, alpha, beta, ply, 0);
-    } 
-    TTEntry* entry = TT.probe(zobristKey);
-    if (entry != nullptr) {
-        hashMove = entry->bestMove;
-        // Fail-low entries carry no move (a1a1).
-        hasHashMove = hashMove.from != hashMove.to;
-        int ttScore = entry->score;
-        if (ttScore > MATE_BOUND) ttScore -= ply;
-        else if (ttScore < -MATE_BOUND) ttScore += ply;
-        if (entry->depth >= depthLeft) {
-                if (entry->flag == HASH_EXACT) return ttScore;
-                if (entry->flag == HASH_ALPHA && ttScore <= alpha) return ttScore;
-                if (entry->flag == HASH_BETA && ttScore >= beta) return ttScore;
-        }
-    }
-    bool wasChecked = board.isInCheck();
+    const int originalAlpha = alpha;
+    const uint64_t key = board.getZobristKey();
+    if (board.isInCheck()) depthLeft++;                 // check extension
+    if (stopped) return 0;
+    if (depthLeft <= 0) return quiescence(board, alpha, beta, ply, 0);
+
+    // 1. Transposition table.
+    Move hashMove;
+    int ttScore;
+    if (probeTT(key, depthLeft, alpha, beta, ply, hashMove, ttScore)) return ttScore;
+    const bool hasHashMove = hashMove.from != hashMove.to;   // fail-low entries carry a1a1
+
+    // 2. Node-level pruning from the static evaluation (non-PV, not in check).
+    const bool inCheck = board.isInCheck();
     // Zero-window nodes only prove a bound; PV nodes need an exact score and are
     // never pruned by the static-eval tricks below.
-    bool pvNode = beta - alpha > 1;
-    int staticEval = wasChecked ? 0 : board.evaluate();
+    const bool pvNode = beta - alpha > 1;
+    const int staticEval = inCheck ? 0 : board.evaluate();
+    int pruned;
+    if (reverseFutility(pvNode, inCheck, depthLeft, beta, staticEval)) return staticEval;
+    if (razor(board, pvNode, inCheck, depthLeft, alpha, ply, staticEval, pruned)) return pruned;
+    if (nullMovePrune(board, inCheck, depthLeft, beta, ply, allowNull, staticEval, pruned)) return pruned;
 
-    // Reverse futility pruning: we are so far above beta that even after giving up
-    // a margin per remaining ply the opponent should not get back below it.
-    if (!pvNode && !wasChecked && depthLeft <= RFP_MAX_DEPTH && std::abs(beta) < MATE_BOUND
-        && staticEval - RFP_MARGIN * depthLeft >= beta) {
-        return staticEval;
-    }
-
-    // Razoring: hopeless shallow non-PV nodes drop straight into quiescence.
-    if (!pvNode && !wasChecked && depthLeft <= 2) {
-        int margin = 300 + 150 * depthLeft * depthLeft;
-        
-        if (staticEval < alpha - margin) {
-            int value = quiescence(board, alpha - 1, alpha, ply, 0);
-            
-            if (value < alpha && std::abs(value) < MATE_BOUND) {
-                return value; 
-            }
-        }
-    }
-
-    // Null move only where we already stand at or above beta: below it, passing
-    // almost never produces a cutoff and the reduced search is wasted.
-    if(!wasChecked && !board.isZugzwang() && depthLeft >= 3 && allowNull && staticEval >= beta){
-        int nullReduction = 3;
-        stackPieces[ply] = -1;
-        board.makeNullMove();
-        int nullScore = -alphaBeta(board, -beta, -beta+1, depthLeft-1-nullReduction,ply+1, false);
-        board.unmakeNullMove();
-
-        if (stopped) return 0;
-        if(nullScore >= beta){
-            // A mate found after passing is not a real mate for this position.
-            return nullScore >= MATE_BOUND ? beta : nullScore;
-        }
-    }
     // Internal iterative reduction: without a hash move the ordering is weak,
     // so search this node one ply shallower and let the TT fill in for next time.
     if (!hasHashMove && depthLeft >= 4) depthLeft--;
 
+    // 3. Move loop.
     Move moveList[256];
-    bool moveMade = false;
-    int moveCount = gen.generateMoves(board, moveList);
+    const int moveCount = gen.generateMoves(board, moveList);
+    scoreMoves(board, moveList, moveCount, hashMove, hasHashMove, ply);
+
+    Move bestMove;
     int bestValue = -1000000;
-    for (int i = 0; i < moveCount; i++) {
-        if(hasHashMove && moveList[i] == hashMove){
-            moveList[i].score = SCORE_HASH;
-        }
-        else{ moveList[i].score = scoreMove(board, moveList[i], ply); }
-    }
-    int score;
     Move quietsTried[64];
     int quietsTriedCount = 0;
     int movesSearched = 0;
-    // Late move pruning: at shallow non-PV nodes, once enough quiet moves have been
-    // tried, the remaining ones (ordered last) are skipped without being searched.
-    bool lmpNode = !pvNode && !wasChecked && depthLeft <= LMP_MAX_DEPTH;
-    int lmpLimit = LMP_BASE + depthLeft * depthLeft;
     int quietsSeen = 0;
+    const int lmpLimit = LMP_BASE + depthLeft * depthLeft;
+
     for (int i = 0; i < moveCount; ++i) {
         pickBestMove(moveList, moveCount, i);
-        bool quietMove = !moveList[i].isCapture() && !moveList[i].isPromotion();
-        // bestValue > -MATE_BOUND: some move was searched and it does not lose to a mate.
-        if (lmpNode && quietMove && quietsSeen >= lmpLimit && bestValue > -MATE_BOUND) continue;
-        // SEE pruning: at shallow non-PV nodes skip moves that lose too much material
-        // on their target square (the allowed loss grows with depth).
-        if (!pvNode && !wasChecked && movesSearched > 0 && depthLeft <= SEE_PRUNE_MAX_DEPTH
-            && bestValue > -MATE_BOUND && !moveList[i].isPromotion()) {
-            int threshold = quietMove ? -SEE_QUIET_MARGIN * depthLeft * depthLeft
-                                      : -SEE_CAPTURE_MARGIN * depthLeft;
-            if (!board.seeGE(moveList[i], threshold)) continue;
-        }
-        stackMoves[ply] = moveList[i];
-        stackPieces[ply] = board.getPieceType(moveList[i].from);
-        if(!board.makeMove(moveList[i])) continue;
-        if (quietMove) quietsSeen++;
-        if (movesSearched == 0) {
-            score = -alphaBeta(board, -beta, -alpha, depthLeft - 1, ply + 1, true);
-        } else {
-            bool isKiller = (moveList[i] == killerMoves[ply][0] || moveList[i] == killerMoves[ply][1]);
-            int reduction = 0;
-            if (depthLeft >= 3 && i >= 4 && !moveList[i].isCapture() && !moveList[i].isPromotion() && !wasChecked && !isKiller) {
-                reduction = reductionTable[std::min(depthLeft, 63)][std::min(i, 63)];
-                reduction = std::max(0, std::min(reduction, depthLeft - 2));
-            }
-            score = -alphaBeta(board, -alpha - 1, -alpha, depthLeft - 1 - reduction, ply + 1, true);
+        const Move move = moveList[i];
+        const bool quiet = !move.isCapture() && !move.isPromotion();
 
-            if (score > alpha) {
-                if (reduction > 0) {
-                    score = -alphaBeta(board, -alpha - 1, -alpha, depthLeft - 1, ply + 1, true);
-                }
-                if (score > alpha && score < beta) {
-                    score = -alphaBeta(board, -beta, -alpha, depthLeft - 1, ply + 1, true);
-                }
-            }
-        }
+        if (skipMove(board, move, quiet, pvNode, inCheck, depthLeft, movesSearched,
+                     quietsSeen, lmpLimit, bestValue)) continue;
 
-        board.unmakeMove(moveList[i]);
+        stackMoves[ply] = move;
+        stackPieces[ply] = board.getPieceType(move.from);
+        if (!board.makeMove(move)) continue;
+        if (quiet) quietsSeen++;
+
+        const int score = searchMove(board, move, i, movesSearched, alpha, beta,
+                                     depthLeft, ply, inCheck);
+        board.unmakeMove(move);
         // An aborted search returns meaningless scores; never let them reach the TT.
         if (stopped) return 0;
-        moveMade = true;
         movesSearched++;
+
         if (score > bestValue) {
-            bestMove = moveList[i];
+            bestMove = move;
             bestValue = score;
         }
-        bool isQuiet = !moveList[i].isCapture() && !moveList[i].isPromotion();
         if (score >= beta) {
             betaCutoffs++;
             if (movesSearched == 1) firstMoveCutoffs++;
-            if (isQuiet) {
-                if (moveList[i] != killerMoves[ply][0]) {
-                    killerMoves[ply][1] = killerMoves[ply][0];
-                    killerMoves[ply][0] = moveList[i];
-                }
-                int bonus = depthLeft * depthLeft;
-                if (bonus > 400) bonus = 400;
-                updateHistory(board, moveList[i], ply, bonus);
-                // Malus: quiets that were tried first and failed to cut off.
-                for (int q = 0; q < quietsTriedCount; q++) {
-                    updateHistory(board, quietsTried[q], ply, -bonus);
-                }
-                if (ply >= 1 && stackPieces[ply - 1] >= 0) {
-                    counterMoves[stackPieces[ply - 1]][stackMoves[ply - 1].to] = moveList[i];
-                }
-            }
-            int storeScore = score;
-            if (storeScore > MATE_BOUND) storeScore += ply;
-            else if (storeScore < -MATE_BOUND) storeScore -= ply;
-            
-            TT.store(zobristKey, depthLeft, storeScore, HASH_BETA, moveList[i]);
+            if (quiet) onQuietCutoff(board, move, depthLeft, ply, quietsTried, quietsTriedCount);
+            TT.store(key, depthLeft, scoreToTT(score, ply), HASH_BETA, move);
             return score;
         }
-        if (isQuiet && quietsTriedCount < 64) quietsTried[quietsTriedCount++] = moveList[i];
+        if (quiet && quietsTriedCount < 64) quietsTried[quietsTriedCount++] = move;
         if (score > alpha) {
             alpha = score;
-            // New best line: this move followed by the child's PV.
-            pvTable[ply][ply] = moveList[i];
-            for (int p = ply + 1; p < pvLength[ply + 1]; p++) pvTable[ply][p] = pvTable[ply + 1][p];
-            pvLength[ply] = pvLength[ply + 1];
+            updatePV(ply, move);
         }
     }
-    if(!moveMade){
-        if (board.isInCheck()) return -MATE_SCORE + ply; 
-        
-        return 0;
-    }
-    HashFlag flag = HASH_ALPHA; 
+
+    // 4. No legal move: mate or stalemate.
+    if (movesSearched == 0) return board.isInCheck() ? -MATE_SCORE + ply : 0;
+
+    // 5. Store the result.
+    HashFlag flag = HASH_ALPHA;
     if (bestValue >= beta) flag = HASH_BETA;
     else if (bestValue > originalAlpha) flag = HASH_EXACT;
-
-    int storeScore = bestValue;
-    if (storeScore > MATE_BOUND) storeScore += ply;
-    else if (storeScore < -MATE_BOUND) storeScore -= ply;
-
     // After a fail low the "best" move is just the highest upper bound, which says
     // nothing; store no move so a good one already in the entry is kept.
-    TT.store(zobristKey, depthLeft, storeScore, flag, flag == HASH_ALPHA ? Move() : bestMove);
-
+    TT.store(key, depthLeft, scoreToTT(bestValue, ply), flag, flag == HASH_ALPHA ? Move() : bestMove);
     return bestValue;
+}
+
+// Stops the search when the time or node budget is used up.
+void Search::checkLimits() {
+    if (timed && (nodes & 2047) == 0 && timeManager.isTimeUp()) stopped = true;
+    if (nodeLimit && nodes >= nodeLimit) stopped = true;
+}
+
+// Probes the TT. Returns true with the score in `score` if the entry is deep
+// enough to cut this node off; always fills `hashMove` (a1a1 when there is none).
+bool Search::probeTT(uint64_t key, int depthLeft, int alpha, int beta, int ply,
+                     Move& hashMove, int& score) {
+    hashMove = Move();
+    TTEntry* entry = TT.probe(key);
+    if (entry == nullptr) return false;
+    hashMove = entry->bestMove;
+    if (entry->depth < depthLeft) return false;
+    score = scoreFromTT(entry->score, ply);
+    if (entry->flag == HASH_EXACT) return true;
+    if (entry->flag == HASH_ALPHA && score <= alpha) return true;
+    if (entry->flag == HASH_BETA && score >= beta) return true;
+    return false;
+}
+
+// Reverse futility pruning: we are so far above beta that even after giving up a
+// margin per remaining ply the opponent should not get back below it.
+bool Search::reverseFutility(bool pvNode, bool inCheck, int depthLeft, int beta, int staticEval) const {
+    return !pvNode && !inCheck && depthLeft <= RFP_MAX_DEPTH && std::abs(beta) < MATE_BOUND
+        && staticEval - RFP_MARGIN * depthLeft >= beta;
+}
+
+// Razoring: hopeless shallow non-PV nodes drop straight into quiescence. Returns
+// true with the quiescence score in `value` if that confirms the fail low.
+bool Search::razor(Board& board, bool pvNode, bool inCheck, int depthLeft, int alpha,
+                   int ply, int staticEval, int& value) {
+    if (pvNode || inCheck || depthLeft > 2) return false;
+    const int margin = 300 + 150 * depthLeft * depthLeft;
+    if (staticEval >= alpha - margin) return false;
+    value = quiescence(board, alpha - 1, alpha, ply, 0);
+    return value < alpha && std::abs(value) < MATE_BOUND;
+}
+
+// Null move pruning, only where we already stand at or above beta: below it,
+// passing almost never produces a cutoff and the reduced search is wasted.
+// Returns true with the score to return in `value` (0 if the search was stopped).
+bool Search::nullMovePrune(Board& board, bool inCheck, int depthLeft, int beta, int ply,
+                           bool allowNull, int staticEval, int& value) {
+    if (inCheck || board.isZugzwang() || depthLeft < 3 || !allowNull || staticEval < beta) return false;
+    const int nullReduction = 3;
+    stackPieces[ply] = -1;
+    board.makeNullMove();
+    const int nullScore = -alphaBeta(board, -beta, -beta + 1, depthLeft - 1 - nullReduction, ply + 1, false);
+    board.unmakeNullMove();
+    if (stopped) { value = 0; return true; }
+    if (nullScore < beta) return false;
+    // A mate found after passing is not a real mate for this position.
+    value = nullScore >= MATE_BOUND ? beta : nullScore;
+    return true;
+}
+
+// Ordering scores for all moves of a node; the hash move goes first.
+void Search::scoreMoves(Board& board, Move* moveList, int moveCount, const Move& hashMove,
+                        bool hasHashMove, int ply) {
+    for (int i = 0; i < moveCount; i++) {
+        moveList[i].score = (hasHashMove && moveList[i] == hashMove)
+                          ? SCORE_HASH : scoreMove(board, moveList[i], ply);
+    }
+}
+
+// Move-level pruning before the move is made: late move pruning and SEE pruning.
+bool Search::skipMove(Board& board, const Move& move, bool quiet, bool pvNode, bool inCheck,
+                      int depthLeft, int movesSearched, int quietsSeen, int lmpLimit,
+                      int bestValue) const {
+    // bestValue > -MATE_BOUND: some move was searched and it does not lose to a mate.
+    const bool safeToPrune = !pvNode && !inCheck && bestValue > -MATE_BOUND;
+    // Late move pruning: at shallow nodes, once enough quiet moves have been tried,
+    // the remaining ones (ordered last) are skipped without being searched.
+    if (safeToPrune && quiet && depthLeft <= LMP_MAX_DEPTH && quietsSeen >= lmpLimit) return true;
+    // SEE pruning: skip moves that lose too much material on their target square
+    // (the allowed loss grows with depth).
+    if (safeToPrune && movesSearched > 0 && depthLeft <= SEE_PRUNE_MAX_DEPTH && !move.isPromotion()) {
+        const int threshold = quiet ? -SEE_QUIET_MARGIN * depthLeft * depthLeft
+                                    : -SEE_CAPTURE_MARGIN * depthLeft;
+        if (!board.seeGE(move, threshold)) return true;
+    }
+    return false;
+}
+
+// Late move reduction for the move at index i of the ordered list.
+int Search::lmrReduction(const Move& move, int i, int depthLeft, int ply, bool inCheck) const {
+    const bool isKiller = move == killerMoves[ply][0] || move == killerMoves[ply][1];
+    if (depthLeft < 3 || i < 4 || move.isCapture() || move.isPromotion() || inCheck || isKiller) return 0;
+    const int reduction = reductionTable[std::min(depthLeft, 63)][std::min(i, 63)];
+    return std::max(0, std::min(reduction, depthLeft - 2));
+}
+
+// Principal variation search of one (already made) move: the first move gets the
+// full window, later ones a reduced zero-window search with re-searches.
+int Search::searchMove(Board& board, const Move& move, int i, int movesSearched, int alpha,
+                       int beta, int depthLeft, int ply, bool inCheck) {
+    if (movesSearched == 0) return -alphaBeta(board, -beta, -alpha, depthLeft - 1, ply + 1, true);
+
+    const int reduction = lmrReduction(move, i, depthLeft, ply, inCheck);
+    int score = -alphaBeta(board, -alpha - 1, -alpha, depthLeft - 1 - reduction, ply + 1, true);
+    if (score > alpha && reduction > 0)
+        score = -alphaBeta(board, -alpha - 1, -alpha, depthLeft - 1, ply + 1, true);
+    if (score > alpha && score < beta)
+        score = -alphaBeta(board, -beta, -alpha, depthLeft - 1, ply + 1, true);
+    return score;
+}
+
+// A quiet move caused a beta cutoff: killers, history (with malus for the quiets
+// tried before it) and the countermove of the previous move.
+void Search::onQuietCutoff(Board& board, const Move& move, int depthLeft, int ply,
+                           const Move* quietsTried, int quietsTriedCount) {
+    if (move != killerMoves[ply][0]) {
+        killerMoves[ply][1] = killerMoves[ply][0];
+        killerMoves[ply][0] = move;
+    }
+    const int bonus = std::min(depthLeft * depthLeft, 400);
+    updateHistory(board, move, ply, bonus);
+    for (int q = 0; q < quietsTriedCount; q++) updateHistory(board, quietsTried[q], ply, -bonus);
+    if (ply >= 1 && stackPieces[ply - 1] >= 0) {
+        counterMoves[stackPieces[ply - 1]][stackMoves[ply - 1].to] = move;
+    }
+}
+
+// New best line at this ply: the move followed by the child's PV.
+void Search::updatePV(int ply, const Move& move) {
+    pvTable[ply][ply] = move;
+    for (int p = ply + 1; p < pvLength[ply + 1]; p++) pvTable[ply][p] = pvTable[ply + 1][p];
+    pvLength[ply] = pvLength[ply + 1];
 }
 
 int Search::quiescence(Board& board, int alpha, int beta, int ply, int qsDepth) {

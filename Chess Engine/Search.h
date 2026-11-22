@@ -70,6 +70,27 @@ private:
     int alphaBeta(Board& board, int alpha, int beta, int depthLeft, int ply, bool allowNull);
     int quiescence(Board& board, int alpha, int beta, int ply, int qsDepth = 0);
 
+    // Parts of alphaBeta, in the order a node uses them (see Search.cpp).
+    void checkLimits();
+    bool probeTT(uint64_t key, int depthLeft, int alpha, int beta, int ply,
+                 Move& hashMove, int& score);
+    bool reverseFutility(bool pvNode, bool inCheck, int depthLeft, int beta, int staticEval) const;
+    bool razor(Board& board, bool pvNode, bool inCheck, int depthLeft, int alpha,
+               int ply, int staticEval, int& value);
+    bool nullMovePrune(Board& board, bool inCheck, int depthLeft, int beta, int ply,
+                       bool allowNull, int staticEval, int& value);
+    void scoreMoves(Board& board, Move* moveList, int moveCount, const Move& hashMove,
+                    bool hasHashMove, int ply);
+    bool skipMove(Board& board, const Move& move, bool quiet, bool pvNode, bool inCheck,
+                  int depthLeft, int movesSearched, int quietsSeen, int lmpLimit,
+                  int bestValue) const;
+    int lmrReduction(const Move& move, int i, int depthLeft, int ply, bool inCheck) const;
+    int searchMove(Board& board, const Move& move, int i, int movesSearched, int alpha,
+                   int beta, int depthLeft, int ply, bool inCheck);
+    void onQuietCutoff(Board& board, const Move& move, int depthLeft, int ply,
+                       const Move* quietsTried, int quietsTriedCount);
+    void updatePV(int ply, const Move& move);
+
     int scoreCapture(Board& board, Move& move, bool* losing = nullptr);
     int scoreMove(Board& board, Move& move, int depth);
     void updateHistory(const Board& board, const Move& move, int ply, int bonus);
