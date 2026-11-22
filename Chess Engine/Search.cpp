@@ -362,7 +362,6 @@ int Search::alphaBeta(Board& board, int alpha, int beta, int depthLeft, int ply,
     int score;
     Move quietsTried[64];
     int quietsTriedCount = 0;
-    bool isEndGame = board.isEndGame();
     int movesSearched = 0;
     // Late move pruning: at shallow non-PV nodes, once enough quiet moves have been
     // tried, the remaining ones (ordered last) are skipped without being searched.

@@ -708,35 +708,6 @@ void Board::unmakeNullMove() {
     castlingRights = prev.castlingRights;
 }
 
-bool Board::SEECalculation(const Board& board, int sq, Color attackerColor) {
-    int gain[32];
-    int tradeCount = 0;
-    uint64_t currOccupancy = board.getOccupancy(BOTH);
-
-    int targetPiece = getPieceType(sq);
-    gain[0] = (targetPiece >= 0) ? PIECE_VALUES[targetPiece] : 0;
-    
-    Color sideToMove = attackerColor;
-
-    while (true) {
-        int lvaSq = GenerateMoves::findLVA(board, sq, sideToMove, currOccupancy);
-        if (lvaSq == -1) break;
-
-        int pieceType = getPieceType(lvaSq);
-        tradeCount++;
-        gain[tradeCount] = PIECE_VALUES[pieceType] - gain[tradeCount - 1];
-        currOccupancy &= ~(1ULL << lvaSq);
-        sideToMove = (sideToMove == WHITE) ? BLACK : WHITE;
-        if (pieceType == W_KING || pieceType == B_KING || tradeCount >= 31) break;
-    }
-
-    while (--tradeCount > 0) {
-        gain[tradeCount - 1] = -std::max(-gain[tradeCount - 1], gain[tradeCount]);
-    }
-
-    return gain[0] >= 0;
-}
-
 bool Board::seeGE(const Move& move, int threshold) const {
     // En passant and castling never lose material on the target square.
     if (move.flag == MoveFlag::EN_PASSANT || move.flag == MoveFlag::KING_CASTLE

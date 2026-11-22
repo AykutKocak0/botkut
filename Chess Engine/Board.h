@@ -47,11 +47,9 @@ public:
     bool isZugzwang() const;
     void makeNullMove();
     void unmakeNullMove();
-    bool SEECalculation(const Board& board,int sq, Color attackerColor);
     // Static exchange evaluation of a move: true if, after the best sequence of
     // recaptures on its target square (either side may stop), it wins >= threshold.
     bool seeGE(const Move& move, int threshold) const;
-    void removeAttackerOcc(uint64_t &occupancy, int attackerType);
     bool isLegalMove(Move move);
 
 

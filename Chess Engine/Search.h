@@ -148,7 +148,6 @@ private:
     TimeManagement timeManager;
 
     Move bestMoveFound;
-    bool stopSearching = false;
     bool timed = false;
     int historyTable[2][64][64] = {};   // kept between searches, so it must start at zero
 
