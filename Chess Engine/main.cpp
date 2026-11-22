@@ -5,6 +5,7 @@
 #include <algorithm>
 #include "Board.h"
 #include "Search.h"
+#include "Notation.h"
 #include "GenerateMoves.h"
 #include "Constants.h"
 #include "TransPositionTable.h"
@@ -54,7 +55,7 @@ void runBench(Search& search, int depth) {
         limits.depth = depth;
         SearchResult result = search.searchSync(board, limits);
         totalNodes += search.getNodes();
-        std::cout << search.moveToString(result.move) << "  " << search.getNodes() << "  " << fen << std::endl;
+        std::cout << Notation::moveToUci(result.move) << "  " << search.getNodes() << "  " << fen << std::endl;
     }
     std::chrono::duration<double> elapsed = std::chrono::high_resolution_clock::now() - start;
     TT.clear();
@@ -96,7 +97,7 @@ Move parseMove(Board& board, std::string moveStr, Search& search) {
     int count = gen.generateMoves(board, moves);
 
     for (int i = 0; i < count; i++) {
-        if (search.moveToString(moves[i]) == moveStr) {
+        if (Notation::moveToUci(moves[i]) == moveStr) {
             return moves[i];
         }
     }

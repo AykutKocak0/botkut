@@ -55,7 +55,6 @@ public:
 
     Move getBestMove() const { return bestMoveFound; }
     uint64_t getNodes() const { return nodes; }
-    std::string moveToString(Move move);
 
 private:
     void startSearch(Board& board, const SearchLimits& limits);
@@ -141,7 +140,6 @@ private:
     uint64_t firstMoveCutoffs = 0;
     void pickBestMove(Move* moveList, int count, int currentIndex);
     
-    char getPromotionChar(Move move);
 
     GenerateMoves gen;
 

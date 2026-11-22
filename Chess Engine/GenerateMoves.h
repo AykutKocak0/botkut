@@ -50,8 +50,6 @@ class GenerateMoves {
         static bool isSquareAttacked(const Board& board, int sq, Color color);
         static int findLVA(const Board& board, int sq, Color attackColor, uint64_t occupancy);
 
-        std::string squareToString(int sq);
-        void printMoveList(const std::vector<Move>& moveList);
         static void init();
         static int generateMoves(const Board& board, Move* moveList);
         int generateCaptureMoves(const Board& board, Move* moveList, Color color);

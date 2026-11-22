@@ -16,4 +16,5 @@ add_executable(Botkut
     Tuner.cpp
     TransPositionTable.cpp
     TimeManagement.cpp
+    Notation.cpp
 )

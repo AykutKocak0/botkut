@@ -13,6 +13,7 @@
 #include <math.h>
 #include "Constants.h"
 #include "TimeManagement.h"
+#include "Notation.h"
 #include <mutex>
 #include <sstream>
 
@@ -237,7 +238,7 @@ void Search::startSearch(Board& board, const SearchLimits& limits) {
                  << " nps " << nps
                  << " time " << (int)(elapsed.count() * 1000)
                  << " pv";
-            for (int p = 0; p < rootPVLength; p++) info << " " << moveToString(rootPV[p]);
+            for (int p = 0; p < rootPVLength; p++) info << " " << Notation::moveToUci(rootPV[p]);
             if (!silent) uciPrint(info.str());
             if (bestValue > MATE_BOUND) { 
 
@@ -259,7 +260,7 @@ void Search::startSearch(Board& board, const SearchLimits& limits) {
           << " rate " << firstMoveRate << "%";
     if (!silent) uciPrint(stats.str());
 
-    printBestMove(moveToString(bestMoveFound));
+    printBestMove(Notation::moveToUci(bestMoveFound));
 }
 
 int Search::alphaBeta(Board& board, int alpha, int beta, int depthLeft, int ply, bool allowNull) {
@@ -660,25 +661,6 @@ void Search::pickBestMove(Move* moveList, int moveCount, int currentIndex) {
     moveList[bestIndex] = temp;
 }
 
-std::string Search::moveToString(Move move) {
-    int fileFrom = move.from % 8;
-    int rankFrom = move.from / 8;
-    int fileTo = move.to % 8;
-    int rankTo = move.to / 8;
-
-    std::string moveStr = "";
-    moveStr += (char)('a' + fileFrom);
-    moveStr += (char)('1' + rankFrom);
-    moveStr += (char)('a' + fileTo);
-    moveStr += (char)('1' + rankTo);
-
-    if (move.isPromotion()) {
-        char promChar = getPromotionChar(move); 
-        moveStr += promChar;
-    }
-
-    return moveStr;
-}
 
 // UCI wants mate distance in moves, not plies: positive = we mate, negative = we get mated.
 std::string Search::scoreToUci(int score) {
@@ -693,20 +675,3 @@ std::string Search::scoreToUci(int score) {
     return "cp " + std::to_string(score);
 }
 
-char Search::getPromotionChar(Move move) {
-    switch (move.flag) {
-        case MoveFlag::PROMOTION_QUEEN:
-        case MoveFlag::CPROMOTION_QUEEN:  return 'q';
-      
-        case MoveFlag::PROMOTION_ROOK:
-        case MoveFlag::CPROMOTION_ROOK:   return 'r';
-        
-        case MoveFlag::PROMOTION_BISHOP:
-        case MoveFlag::CPROMOTION_BISHOP: return 'b';
-        
-        case MoveFlag::PROMOTION_KNIGHT:
-        case MoveFlag::CPROMOTION_KNIGHT: return 'n';
-        
-        default: return '\0';
-    }
-}

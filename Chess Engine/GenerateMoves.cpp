@@ -657,45 +657,7 @@ int GenerateMoves::findLVA(const Board& board, int sq, Color attackerColor, uint
 
 
 
-std::string GenerateMoves::squareToString(int sq) {
-    if (sq < 0 || sq > 63) return "??";
-    char file = 'a' + (sq % 8);
-    char rank = '1' + (sq / 8);
-    return {file, rank};
-}
 
-void GenerateMoves::printMoveList(const std::vector<Move>& moveList) {
-
-    std::cout << "--- Move List (" << moveList.size() << " moves) ---" << std::endl;
-    
-    for (const auto& move : moveList) {
-        int from = move.from;
-        int to = move.to;
-        MoveFlag flag = move.flag;
-
-        std::cout << squareToString(from) << squareToString(to);
-
-        // Print human-readable flag info
-        switch (flag) {
-            case MoveFlag::QUIET:            std::cout << " (Quiet)"; break;
-            case MoveFlag::CAPTURE:          std::cout << " (Capture)"; break;
-            case MoveFlag::DOUBLE_PAWN_PUSH: std::cout << " (Double Push)"; break;
-            case MoveFlag::KING_CASTLE:      std::cout << " (O-O)"; break;
-            case MoveFlag::QUEEN_CASTLE:     std::cout << " (O-O-O)"; break;
-            case MoveFlag::EN_PASSANT:       std::cout << " (EP Capture)"; break;
-            case MoveFlag::PROMOTION_QUEEN:  std::cout << "q (Promotion)"; break;
-            case MoveFlag::CPROMOTION_QUEEN: std::cout << "q (Capture Promotion)"; break;
-            case MoveFlag::PROMOTION_ROOK:  std::cout << "r (Promotion)"; break;
-            case MoveFlag::CPROMOTION_ROOK: std::cout << "r (Capture Promotion)"; break;
-            case MoveFlag::PROMOTION_BISHOP:  std::cout << "b (Promotion)"; break;
-            case MoveFlag::CPROMOTION_BISHOP: std::cout << "b (Capture Promotion)"; break;
-            case MoveFlag::PROMOTION_KNIGHT:  std::cout << "n (Promotion)"; break;
-            case MoveFlag::CPROMOTION_KNIGHT: std::cout << "n (Capture Promotion)"; break;
-            default: break;
-        }
-        std::cout << std::endl;
-    }
-}
 
 void GenerateMoves::generatePawnCaptures(const Board& board, Move* moveList, Color color, int& moveCount) {
     uint64_t pawns = board.getPieceBB(color == WHITE ? W_PAWN : B_PAWN);
