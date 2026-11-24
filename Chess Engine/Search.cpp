@@ -66,6 +66,7 @@ void Search::clearHistory() {
     stopAndWait();
     memset(historyTable, 0, sizeof(historyTable));
     std::fill(contHist.begin(), contHist.end(), 0);
+    std::fill(pawnCorr.begin(), pawnCorr.end(), 0);
     for (int p = 0; p < 12; p++) {
         for (int sq = 0; sq < 64; sq++) counterMoves[p][sq] = Move();
     }
@@ -304,7 +305,10 @@ int Search::alphaBeta(Board& board, int alpha, int beta, int depthLeft, int ply,
     // Zero-window nodes only prove a bound; PV nodes need an exact score and are
     // never pruned by the static-eval tricks below.
     const bool pvNode = beta - alpha > 1;
-    const int staticEval = inCheck ? 0 : board.evaluate();
+    // rawEval is the evaluation itself; staticEval adds what correction history has
+    // learned about how far the evaluation is off in similar positions.
+    const int rawEval = inCheck ? 0 : board.evaluate();
+    const int staticEval = inCheck ? 0 : correctedEval(board, rawEval);
     int pruned;
     if (reverseFutility(pvNode, inCheck, depthLeft, beta, staticEval)) return staticEval;
     if (razor(board, pvNode, inCheck, depthLeft, alpha, ply, staticEval, pruned)) return pruned;
@@ -355,6 +359,7 @@ int Search::alphaBeta(Board& board, int alpha, int beta, int depthLeft, int ply,
             betaCutoffs++;
             if (movesSearched == 1) firstMoveCutoffs++;
             if (quiet) onQuietCutoff(board, move, depthLeft, ply, quietsTried, quietsTriedCount);
+            if (!inCheck && quiet) updateCorrection(board, depthLeft, score, staticEval, HASH_BETA);
             TT.store(key, depthLeft, scoreToTT(score, ply), HASH_BETA, move);
             return score;
         }
@@ -372,10 +377,54 @@ int Search::alphaBeta(Board& board, int alpha, int beta, int depthLeft, int ply,
     HashFlag flag = HASH_ALPHA;
     if (bestValue >= beta) flag = HASH_BETA;
     else if (bestValue > originalAlpha) flag = HASH_EXACT;
+    // A capture as the best move says more about the tactics than about the
+    // evaluation, so only quiet best moves (or a fail low) train the correction.
+    const bool quietBest = !bestMove.isCapture() && !bestMove.isPromotion();
+    if (!inCheck && (flag == HASH_ALPHA || quietBest))
+        updateCorrection(board, depthLeft, bestValue, staticEval, flag);
     // After a fail low the "best" move is just the highest upper bound, which says
     // nothing; store no move so a good one already in the entry is kept.
     TT.store(key, depthLeft, scoreToTT(bestValue, ply), flag, flag == HASH_ALPHA ? Move() : bestMove);
     return bestValue;
+}
+
+// ---------------------------------------------------------------------------
+// Correction history. Each table maps a feature of the position (here: the pawn
+// structure, per side to move) to a running average of how far the search result
+// was from the static evaluation. Entries are stored in 1/CORR_GRAIN centipawns.
+// ---------------------------------------------------------------------------
+
+int Search::correctedEval(const Board& board, int rawEval) {
+    const int side = board.sideToMove;
+    const int correction = pawnCorr[side * CORR_SIZE + board.getPawnKey() % CORR_SIZE] / CORR_GRAIN;
+    return std::clamp(rawEval + correction, -MATE_BOUND + 1, MATE_BOUND - 1);
+}
+
+// Learns from the residual (bestValue - staticEval), where staticEval is the already
+// corrected evaluation: the entry is nudged by the error that is still left. The
+// leaves of the search (quiescence stand-pat) use the corrected evaluation too, so
+// the search result already contains the correction; learning toward
+// (bestValue - rawEval) would make the table feed on its own value and keep any bias
+// it once picked up. With the residual, learning stops once the error is gone.
+// A bound only counts in the direction it proves: a fail high (lower bound) can only
+// say the evaluation was too low, a fail low (upper bound) only that it was too high.
+// Shallow nodes (depth < CORR_MIN_DEPTH) do not train: measured on real games, they
+// gave 72% of all updates and their differences were mostly tactics, not evaluation
+// error, which filled the tables with noise.
+void Search::updateCorrection(const Board& board, int depthLeft, int bestValue, int staticEval,
+                              int flag) {
+    if (depthLeft < CORR_MIN_DEPTH) return;
+    if (std::abs(bestValue) >= MATE_BOUND) return;
+    if (flag == HASH_BETA && bestValue <= staticEval) return;
+    if (flag == HASH_ALPHA && bestValue >= staticEval) return;
+
+    const int residual = std::clamp((bestValue - staticEval) * CORR_GRAIN, -CORR_MAX, CORR_MAX);
+    const int weight = std::min(depthLeft + 1, 16);
+    auto apply = [residual, weight](int& entry) {
+        entry = std::clamp(entry + residual * weight / CORR_WEIGHT_SCALE, -CORR_MAX, CORR_MAX);
+    };
+    const int side = board.sideToMove;
+    apply(pawnCorr[side * CORR_SIZE + board.getPawnKey() % CORR_SIZE]);
 }
 
 // Stops the search when the time or node budget is used up.
@@ -531,7 +580,9 @@ int Search::quiescence(Board& board, int alpha, int beta, int ply, int qsDepth) 
 
     bool inCheck = board.isInCheck();
     if (!inCheck) {
-        int standPat = board.evaluate();
+        // The leaves use the corrected evaluation as well; this is where correction
+        // history changes the scores the search backs up, not only pruning decisions.
+        int standPat = correctedEval(board, board.evaluate());
         if (standPat >= beta) {
             if (mayStore) TT.store(key, 0, scoreToTT(standPat, ply), HASH_BETA, Move());
             return standPat;

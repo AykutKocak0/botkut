@@ -90,6 +90,15 @@ private:
     void onQuietCutoff(Board& board, const Move& move, int depthLeft, int ply,
                        const Move* quietsTried, int quietsTriedCount);
     void updatePV(int ply, const Move& move);
+    int correctedEval(const Board& board, int rawEval);
+    void updateCorrection(const Board& board, int depthLeft, int bestValue, int staticEval, int flag);
+
+    static constexpr int CORR_SIZE = 16384;
+    static constexpr int CORR_GRAIN = 256;
+    static constexpr int CORR_MAX = 32 * CORR_GRAIN;
+    static constexpr int CORR_WEIGHT_SCALE = 512;
+    static constexpr int CORR_MIN_DEPTH = 3;
+    std::vector<int> pawnCorr = std::vector<int>(2 * CORR_SIZE, 0);
 
     int scoreCapture(Board& board, Move& move, bool* losing = nullptr);
     int scoreMove(Board& board, Move& move, int depth);
