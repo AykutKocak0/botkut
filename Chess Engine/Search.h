@@ -168,6 +168,7 @@ private:
 
     Move bestMoveFound;
     bool timed = false;
+    bool rootDepthDone = false;
     int historyTable[2][64][64] = {};   // kept between searches, so it must start at zero
 
     Move killerMoves[64][2];

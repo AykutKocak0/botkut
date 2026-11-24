@@ -106,6 +106,11 @@ void Search::startSearch(Board& board, const SearchLimits& limits) {
     }
 
     timed = isTimeLeft;
+    // The clock may only stop the search once depth 1 has finished. Depth 1 takes
+    // well under a millisecond, but if the process is paused (other games, the OS)
+    // the time can run out before it completes, and the engine used to play an
+    // unsearched move then.
+    rootDepthDone = false;
     TT.newSearch();
     betaCutoffs = 0;
     firstMoveCutoffs = 0;
@@ -126,19 +131,23 @@ void Search::startSearch(Board& board, const SearchLimits& limits) {
         printBestMove("0000");
         return;
     }
+    int fallback = 0;
     for (int i = 0; i < moveCount; i++) {
         rootMoveList[i].score = scoreMove(board, rootMoveList[i], 0);
+        if (rootMoveList[i].score > rootMoveList[fallback].score) fallback = i;
     }
-    // Fallback in case the search is stopped before depth 1 completes.
+    // Fallback if a "stop" or node limit ends the search before depth 1 completes:
+    // the best move by move-ordering score (e.g. a winning capture), not simply
+    // the first move generated.
     hasRootMove = true;
-    bestMoveFound = rootMoveList[0];
+    bestMoveFound = rootMoveList[fallback];
     int previousBestValue = 0;
     // Principal variation of the best root move in the current iteration.
     Move rootPV[65];
     int rootPVLength = 0;
     for (int currentDepth = 1; currentDepth <= maxDepth; currentDepth++) {
         // Past the soft limit the next iteration would most likely not finish.
-        if (isTimeLeft && timeManager.isSoftTimeUp()) break;
+        if (isTimeLeft && rootDepthDone && timeManager.isSoftTimeUp()) break;
         int alpha = -1000000;
         int beta  =  1000000;
         
@@ -223,6 +232,7 @@ void Search::startSearch(Board& board, const SearchLimits& limits) {
         }
 
         if (!stopped) {
+            rootDepthDone = true;
             bestMoveFound = currentBestMove;
             previousBestValue = bestValue;
             bestScoreFound = bestValue;
@@ -370,7 +380,7 @@ int Search::alphaBeta(Board& board, int alpha, int beta, int depthLeft, int ply,
 
 // Stops the search when the time or node budget is used up.
 void Search::checkLimits() {
-    if (timed && (nodes & 2047) == 0 && timeManager.isTimeUp()) stopped = true;
+    if (timed && rootDepthDone && (nodes & 2047) == 0 && timeManager.isTimeUp()) stopped = true;
     if (nodeLimit && nodes >= nodeLimit) stopped = true;
 }
 
